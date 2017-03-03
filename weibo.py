@@ -27,6 +27,34 @@ def _encode_params(**kw):
         args.append('%s=%s' % (key, urllib.parse.quote(para)))
     return '&'.join(args)
 
+def _encode_multipart(**kw):
+    'encode mulyipart data'
+    boundary = '----------%s' % hex(int(time.time() * 1000))
+    data = []
+    for key, value in kw.items():
+        data.append('--%s' % boundary)
+        if hasattr(value, 'read'):
+            filename = getattr(value, 'name', '')
+            name = filename.rfind('.')
+            ext = filename[name:].lower() if name != (-1) else ""
+            content = value.read()
+            content = content.decode('ISO-8859-1')
+            data.append('Content-Disposition: form-data; name="%s"; filename="hidden"' % key)
+            data.append('Content-Length: %d' % len(content))
+            data.append('Content-Type: %s\r\n' % _guess_content_type(ext))
+            data.append(content)
+        else:
+            data.append('Content-Disposition: form-data; name="%s"\r\n' % key)
+            data.append(value if isinstance(value, str) else value.decode('utf-8'))
+    data.append('--%s--\r\n' % boundary)
+    return '\r\n'.join(data), boundary
+
+_CONTENT_TYPES = {'.png': 'image/png', '.gif': 'image/gif', '.jpg': 'image/jpeg',
+                  '.jpeg': 'image/jpeg', '.jpe': 'image/jpeg'}
+
+def _guess_content_type(ext):
+    return _CONTENT_TYPES.get(ext, 'application/octet-stream')
+
 
 class JsonDict(dict):
     '''
@@ -59,16 +87,17 @@ def _http_request(url, method, authorization, **kw):
     params = None
     boundary = None
     if method == _HTTP_UPLOAD:
-        pass
+        params, boundary = _encode_multipart(**kw)
     else:
         params = _encode_params(**kw)
     http_url = '%s?%s' % (url, params) if method == _HTTP_GET else url
     http_para = None if method == _HTTP_GET else params.encode(encoding='utf-8')
+    print(http_para)
     req = urllib.request.Request(http_url, data=http_para)
     if authorization:
-        pass
+        req.add_header('Authorization', 'OAuth2 %s' % authorization)
     if boundary:
-        pass
+        req.add_header('Content-Type', 'multipart/form-data; boundary=%s' % boundary)
     resq = urllib.request.urlopen(req)
     body = resq.read().decode("utf-8")
     result = json.loads(body, object_hook=_obj_hook)
@@ -76,7 +105,20 @@ def _http_request(url, method, authorization, **kw):
         print('error')
     return result
 
+class HttpObject(object):
+    'post get or updload object'
+    def __init__(self, client, method):
+        self.client = client
+        self.method = method
 
+    def __getattr__(self, attr):
+        def wrap(**kw):
+            'request param'
+            if self.client.is_expires():
+                raise AttributeError
+            return _http_request('%s%s.json' % (self.client.api_url, attr.replace('__', '/')),
+                                 self.method, self.client.access_token, **kw)
+        return wrap
 
 class APIClient(object):
     'APIClient class'
@@ -90,6 +132,9 @@ class APIClient(object):
         self.api_url = 'https://%s/%s/' % (domain, version)
         self.access_token = None
         self.expires = 0.0
+        self.get = HttpObject(self, _HTTP_GET)
+        self.post = HttpObject(self, _HTTP_POST)
+        self.upload = HttpObject(self, _HTTP_UPLOAD)
 
     def get_authorize_url(self):
         'get authorize url'
@@ -113,6 +158,10 @@ code&client_id=%s&redirect_uri=%s'''%(self.client_id, self.redirect_uri)
         self.access_token = str(access_token)
         self.expires = float(expires_in)
 
+    def is_expires(self):
+        'judge'
+        return not self.access_token or time.time() > self.expires
+
     def public_timeline(self):
         '''
         get new public weibo,the parameters followed can be used in _http_get in this method
@@ -130,6 +179,17 @@ code&client_id=%s&redirect_uri=%s'''%(self.client_id, self.redirect_uri)
                 )
         return result
 
+    def statuses_update(self):
+        '''
+        post a weibo with a picutre
+        '''
+        result = _http_upload('https://upload.api.weibo.com/2/statuses/upload.json', \
+                            access_token=self.access_token, \
+                            status="hanzo from api", \
+                            pic=open('hanzo.jpg', 'rb'), \
+                            rip='0.0.0.0', \
+                             )
+        return result
 
 def main():
     '''
@@ -147,7 +207,13 @@ def main():
         result = client.request_access_token(input("please input code : "))
         client.set_access_token(result.access_token, result.expires_in)
         #step 4 : using api by access_token
-        print(client.public_timeline())
+        #print(client.public_timeline())
+        '''
+        in this step,the api name have to turn '/' in to '__'
+        for example,statuses/upload(this is a standard api name) have to turn into statuses__upload
+        '''
+        #print(client.get.account__get_uid())
+        print(client.statuses_update())
     except ValueError:
         print('pyOauth2Error')
 
